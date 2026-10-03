@@ -21,6 +21,7 @@ with open(os.path.join(_HERE, 'feature_cols.json')) as f:
     feature_cols = json.load(f)
 
 from compatibility import compute_compatibility_score
+from compute_hla import encode_for_model
 
 CATEGORICALS = [
     'donor_ABO', 'donor_CMV', 'recipient_ABO', 'recipient_rh',
@@ -32,10 +33,12 @@ CATEGORICALS = [
 def build_and_predict(donor: dict, patient: dict, antigen: int, allel: int):
     """
     Builds feature vector and runs all 3 RF models.
+    antigen / allel are mismatch counts out of 10 (from compute_hla).
     Returns compat, derived, and all 3 model predictions.
     """
     compat  = compute_compatibility_score(donor, patient)
     derived = compat['derived_fields']
+    antigen_enc, allel_enc = encode_for_model(antigen, allel)
 
     row = {
         'donor_age':           donor['donor_age'],
@@ -50,9 +53,9 @@ def build_and_predict(donor: dict, patient: dict, antigen: int, allel: int):
         'ABO_match_binary':    1 if derived['ABO_match'] == 'matched' else 0,
         'gender_risk':         1 if derived['gender_match'] == 'female_to_male' else 0,
         'donor_age_risk':      1 if donor['donor_age'] >= 35 else 0,
-        'total_HLA_diff':      antigen + allel,
-        'antigen':             antigen,
-        'allel':               allel,
+        'total_HLA_diff':      antigen_enc + allel_enc,
+        'antigen':             antigen_enc,
+        'allel':               allel_enc,
         'donor_ABO':           donor['donor_ABO'],
         'donor_CMV':           donor['donor_CMV'],
         'recipient_ABO':       patient['recipient_ABO'],

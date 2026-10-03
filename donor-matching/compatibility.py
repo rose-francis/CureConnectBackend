@@ -2,11 +2,13 @@
 # Compatibility Score — mirror this logic in React Native too
 # ============================================================
 
+from compute_hla import get_hla_match_label
+
 def compute_compatibility_score(donor: dict, patient: dict) -> dict:
     score = 0
     breakdown = {}
 
-    # HLA Match (40 pts) — from antigen + allel lab values
+    # HLA Match (40 pts) — antigen + allel are mismatch counts out of 10
     total_diff = donor.get('antigen', 0) + donor.get('allel', 0)
     hla_table = {0: (40, '10/10 Perfect'), 1: (30, '9/10'),
                  2: (18, '8/10'), 3: (5, '7/10 or below')}
@@ -55,11 +57,12 @@ def compute_compatibility_score(donor: dict, patient: dict) -> dict:
 
     # Auto-derive fields for model input
     derived = {
-        'HLA_match':   ['10/10','9/10','8/10','7/10'][min(total_diff, 3)],
+        'HLA_match':   get_hla_match_label(donor.get('antigen', 0), donor.get('allel', 0)),
         'HLA_mismatch': 'matched' if total_diff == 0 else 'mismatched',
         'ABO_match':    'matched' if abo_ok else 'mismatched',
-        'CMV_status':  {('absent','absent'):0, ('present','present'):1,
-                        ('absent','present'):2, ('present','absent'):3}.get(cmv_key, 0),
+        # Same coding as the training data's CMV_status (donor, recipient)
+        'CMV_status':  {('absent','absent'):0, ('present','absent'):1,
+                        ('absent','present'):2, ('present','present'):3}.get(cmv_key, 0),
         'gender_match': 'female_to_male' if f2m else 'other',
     }
 

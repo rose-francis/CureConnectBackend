@@ -91,6 +91,12 @@ def normalize_disease_group(value):
     key = str(value).strip().lower().replace("-", "").replace(" ", "")
     return key if key in ("malignant", "nonmalignant") else "malignant"
 
+def normalize_cmv(value):
+    key = str(value).strip().lower()
+    if key in ("present", "positive", "pos", "+", "yes"):
+        return "present"
+    return "absent"
+
 #disease prediction
 class DiseaseRequest(BaseModel):
     symptoms: list[str]
@@ -140,10 +146,7 @@ def find_top5(patient_id: int):
             "plus": "plus", "minus": "minus"          # ← add these
         }.get(patient["RhFactor"].lower(), "plus"),
 
-        "recipient_CMV": {
-            "Positive": "present", "Negative": "absent",
-            "Present": "present",  "Absent": "absent"  # ← add these
-        }.get(patient["CMVStatus"], "absent"),
+        "recipient_CMV": normalize_cmv(patient["CMVStatus"]),
         "disease": normalize_disease_type(patient["DiseaseType"]),
         "disease_group": normalize_disease_group(patient["DiseaseGroup"]),
         "risk_group": str(patient["RiskGroup"]).strip().lower(),
@@ -203,10 +206,7 @@ def find_top5(patient_id: int):
 
     # Fix formats
     donor_df["donor_ABO"] = donor_df["donor_ABO"].replace({"O": "0"})
-    donor_df["donor_CMV"] = donor_df["donor_CMV"].map({
-        "Positive": "present",
-        "Negative": "absent"
-    })
+    donor_df["donor_CMV"] = donor_df["donor_CMV"].map(normalize_cmv)
 
     # Run ML
     top5 = find_top5_donors(patient, donor_df)
