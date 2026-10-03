@@ -27,8 +27,10 @@ def extract_hla_profile(row: dict, prefix: str) -> dict:
 def _fields(typing):
     if typing is None or (isinstance(typing, float) and typing != typing):
         raise ValueError('missing HLA typing')
+    # Only the first two fields decide a match; a third field (e.g. 02:01:01)
+    # is a synonymous variant and must not create a mismatch
     fields = str(typing).strip().split('*')[-1].split(':')
-    return fields[0], ':'.join(fields[1:])
+    return fields[0], fields[1] if len(fields) > 1 else ''
 
 def _compare(d, p):
     """Returns (antigen_mismatch, allele_mismatch) for one allele pair."""
@@ -40,6 +42,17 @@ def _compare(d, p):
         return 0, 1
     return 0, 0
 
+def _best_pairing(d_pair, p_pair):
+    """(antigen, allele) mismatches at one locus for the best donor/patient pairing."""
+    d1, d2 = d_pair
+    pairings = []
+    for p1, p2 in permutations(p_pair):
+        ag1, al1 = _compare(d1, p1)
+        ag2, al2 = _compare(d2, p2)
+        pairings.append((ag1 + ag2, al1 + al2))
+    # Fewest mismatches; on a tie prefer allele- over antigen-level
+    return min(pairings, key=lambda x: (x[0] + x[1], x[0]))
+
 def compute_hla_differences(donor_hla: dict, patient_hla: dict):
     """
     Returns (antigen_diff, allel_diff): the number of antigen-level and
@@ -49,28 +62,24 @@ def compute_hla_differences(donor_hla: dict, patient_hla: dict):
     """
     antigen_diff = allel_diff = 0
     for locus in LOCI:
-        d1, d2 = donor_hla[locus]
-        pairings = []
-        for p1, p2 in permutations(patient_hla[locus]):
-            ag1, al1 = _compare(d1, p1)
-            ag2, al2 = _compare(d2, p2)
-            pairings.append((ag1 + ag2, al1 + al2))
-        # Fewest mismatches; on a tie prefer allele- over antigen-level
-        ag, al = min(pairings, key=lambda x: (x[0] + x[1], x[0]))
+        ag, al = _best_pairing(donor_hla[locus], patient_hla[locus])
         antigen_diff += ag
         allel_diff   += al
     return antigen_diff, allel_diff
 
-def encode_for_model(antigen_diff, allel_diff):
+def compute_locus_matches(donor_hla: dict, patient_hla: dict) -> dict:
     """
-    Converts mismatch counts to the dataset's 'antigen'/'allel' encoding:
-    a full match is (0, 0); otherwise each count is stored as count + 1.
-    e.g. one antigen mismatch -> (2, 1), one allele mismatch -> (1, 2).
-    Clipped to the ranges seen in training (antigen 0-3, allel 0-4).
+    Allele-level (high resolution) matches per locus, 0-2 each, keyed the
+    way the CIBMTR dataset names them (hla_match_a_high, ...), plus the
+    10-allele total hla_high_res_10.
     """
-    if antigen_diff + allel_diff == 0:
-        return 0, 0
-    return min(antigen_diff + 1, 3), min(allel_diff + 1, 4)
+    matches = {}
+    for locus in LOCI:
+        ag, al = _best_pairing(donor_hla[locus], patient_hla[locus])
+        key = locus.split('-')[1].lower()
+        matches[f'hla_match_{key}_high'] = 2 - ag - al
+    matches['hla_high_res_10'] = sum(matches.values())
+    return matches
 
 def get_hla_match_label(antigen_diff, allel_diff):
     total = antigen_diff + allel_diff

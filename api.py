@@ -68,27 +68,33 @@ supabase_headers = {
 }
 
 # ============================================================
-# Disease / disease-group values coming from the frontend don't
-# always match the exact casing the models were trained on
-# (e.g. "Chronic", "Non-malignant"). Normalize them here so the
-# ML pipeline sees the vocabulary it actually knows.
+# Values coming from the frontend don't always match the vocabulary
+# the donor-matching model was trained on (the CIBMTR dataset).
+# Normalize them here so the model sees values it actually knows.
 # ============================================================
 
+# Frontend disease type -> CIBMTR prim_disease_hct
 DISEASE_TYPE_MAP = {
     "leukemia":     "AML",
     "aml":          "AML",
     "all":          "ALL",
-    "chronic":      "chronic",
-    "lymphoma":     "lymphoma",
-    "nonmalignant": "nonmalignant",
+    "chronic":      "CML",
+    "lymphoma":     "NHL",
+    "nonmalignant": "SAA",
 }
 
+# CIBMTR dri_score values a DriScore column may hold
+DRI_VALUES = {"Low", "Intermediate", "High", "Very high",
+              "N/A - non-malignant indication", "N/A - pediatric"}
+
+def _key(value):
+    return str(value).strip().lower().replace("-", "").replace(" ", "")
+
 def normalize_disease_type(value):
-    key = str(value).strip().lower().replace("-", "").replace(" ", "")
-    return DISEASE_TYPE_MAP.get(key, "AML")
+    return DISEASE_TYPE_MAP.get(_key(value))
 
 def normalize_disease_group(value):
-    key = str(value).strip().lower().replace("-", "").replace(" ", "")
+    key = _key(value)
     return key if key in ("malignant", "nonmalignant") else "malignant"
 
 def normalize_cmv(value):
@@ -96,6 +102,31 @@ def normalize_cmv(value):
     if key in ("present", "positive", "pos", "+", "yes"):
         return "present"
     return "absent"
+
+def normalize_graft_type(value):
+    key = _key(value)
+    return "Peripheral blood" if ("periph" in key or key in ("pb", "pbsc")) else "Bone marrow"
+
+def to_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def derive_dri_score(patient):
+    """
+    Uses the patient's DriScore column when it holds a CIBMTR value.
+    Otherwise derives it the way the dataset does: non-malignant disease
+    and children have no DRI, else the app's low/high risk group.
+    """
+    dri = str(patient.get("DriScore") or "").strip()
+    if dri in DRI_VALUES:
+        return dri
+    if normalize_disease_group(patient.get("DiseaseGroup")) == "nonmalignant":
+        return "N/A - non-malignant indication"
+    if (to_number(patient.get("Age")) or 0) < 18:
+        return "N/A - pediatric"
+    return {"low": "Low", "high": "High"}.get(_key(patient.get("RiskGroup")))
 
 #disease prediction
 class DiseaseRequest(BaseModel):
@@ -132,25 +163,21 @@ def find_top5(patient_id: int):
 
     patient = patient_data[0]
 
-    # Rename + map patient fields to match with upa table
+    # Map patient fields to what compatibility scoring and the model use
     patient = {
         "patient_id": patient["Patient_id"],
 
         "recipient_age": float(patient["Age"]),
         "recipient_gender": patient["Gender"].lower(),
-        "recipient_body_mass": float(patient["BodyMass"]),
         "recipient_ABO": patient["BloodGroup"].replace("O", "0"),
-        "recipient_rh": {
-            "+": "plus", "-": "minus",
-            "positive": "plus", "negative": "minus",
-            "plus": "plus", "minus": "minus"          # ← add these
-        }.get(patient["RhFactor"].lower(), "plus"),
-
         "recipient_CMV": normalize_cmv(patient["CMVStatus"]),
-        "disease": normalize_disease_type(patient["DiseaseType"]),
-        "disease_group": normalize_disease_group(patient["DiseaseGroup"]),
-        "risk_group": str(patient["RiskGroup"]).strip().lower(),
-        "tx_post_relapse": str(patient["PostRelapse"]).strip().lower(),
+
+        "prim_disease_hct": normalize_disease_type(patient["DiseaseType"]),
+        "dri_score": derive_dri_score(patient),
+        # New Patient columns; missing until added in Supabase — the
+        # model treats a missing value as unknown
+        "karnofsky_score": to_number(patient.get("KarnofskyScore")),
+        "comorbidity_score": to_number(patient.get("ComorbidityScore")),
 
         # HLA fields 
         "HLA_A_1": patient["Hla_a_1"],
@@ -185,7 +212,6 @@ def find_top5(patient_id: int):
         "BloodGroup": "donor_ABO",
         "CMVStatus": "donor_CMV",
         "Gender": "donor_gender",
-        "StemCellSource": "stem_cell_source",
 
         "Hla_a_1": "HLA_A_1",
         "Hla_a_2": "HLA_A_2",
@@ -199,14 +225,12 @@ def find_top5(patient_id: int):
         "Hla_dqb1_2": "HLA_DQB1_2",
     })
 
-    # Add missing fields
-    donor_df["CD34_x1e6_per_kg"] = 10.0
-    donor_df["CD3_x1e8_per_kg"] = 5.0
-    donor_df["CD3_to_CD34_ratio"] = donor_df["CD3_x1e8_per_kg"] / donor_df["CD34_x1e6_per_kg"] 
-
     # Fix formats
     donor_df["donor_ABO"] = donor_df["donor_ABO"].replace({"O": "0"})
     donor_df["donor_CMV"] = donor_df["donor_CMV"].map(normalize_cmv)
+    donor_df["graft_type"] = donor_df.get("StemCellSource", pd.Series(index=donor_df.index, dtype=object)).map(normalize_graft_type)
+    # Donors come from the registry, so they are unrelated to the patient
+    donor_df["donor_related"] = "Unrelated"
 
     # Run ML
     top5 = find_top5_donors(patient, donor_df)
@@ -229,9 +253,11 @@ def find_top5(patient_id: int):
             "Antigen":d["antigen_diff"],
             "Allele":d["allel_diff"],
 
-            "Survival": d["alive_probability"],
-            "RelapseRisk": d["relapse_risk"],
-            "GvhdRisk": d["gvhd_risk"]
+            # Event-free survival: no relapse, graft failure or death.
+            # The CIBMTR data has no separate relapse/GvHD labels, so those stay empty
+            "Survival": d["event_free_survival"],
+            "RelapseRisk": None,
+            "GvhdRisk": None
         })
 
     # Delete existing matches for this patient before inserting new ones

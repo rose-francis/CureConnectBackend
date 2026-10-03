@@ -1,7 +1,7 @@
 # ============================================================
 # test_feature_consistency.py
-# Checks that features built at prediction time use the same
-# encoding as the training data in bone_marrow.csv.
+# Checks the CMV and HLA coding used by compatibility scoring and
+# the per-locus HLA matches fed to the EFS model.
 # Run: python -m pytest test_feature_consistency.py
 # ============================================================
 
@@ -9,7 +9,7 @@ import os
 import pandas as pd
 
 from compatibility import compute_compatibility_score
-from compute_hla import compute_hla_differences, encode_for_model, get_hla_match_label
+from compute_hla import compute_hla_differences, compute_locus_matches, get_hla_match_label
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 df = pd.read_csv(os.path.join(_HERE, 'bone_marrow.csv'), na_values='?')
@@ -24,12 +24,12 @@ def test_cmv_status_matches_training_coding():
         assert derived['CMV_status'] == group['CMV_status'].mode()[0], (d, r)
 
 
-def test_hla_encoding_matches_training_coding():
+def test_hla_match_label_matches_training_coding():
     known = df.dropna(subset=['antigen', 'allel', 'HLA_match'])
     for _, row in known.drop_duplicates(['antigen', 'allel', 'HLA_match']).iterrows():
         ag, al = int(row['antigen']), int(row['allel'])
+        # bone_marrow.csv stores a mismatch count as count + 1
         counts = (0, 0) if ag + al == 0 else (ag - 1, al - 1)
-        assert encode_for_model(*counts) == (ag, al)
         assert get_hla_match_label(*counts) == row['HLA_match']
 
 
@@ -54,3 +54,15 @@ def test_hla_differences():
     assert compute_hla_differences(_profile(**{'HLA-B': ['07:02', '44:02']}), patient) == (1, 0)
     # Both alleles at a locus mismatched -> 2 mismatches
     assert compute_hla_differences(_profile(**{'HLA-C': ['04:01', '05:01']}), patient) == (2, 0)
+    # A third field is a synonymous variant, not a mismatch
+    assert compute_hla_differences(_profile(**{'HLA-A': ['01:01:01', '02:01']}), patient) == (0, 0)
+
+
+def test_locus_matches():
+    patient = _profile()
+    full = compute_locus_matches(_profile(), patient)
+    assert full['hla_high_res_10'] == 10
+    assert all(full[f'hla_match_{l}_high'] == 2 for l in ['a', 'b', 'c', 'drb1', 'dqb1'])
+    # One allele mismatch at A, both alleles mismatched at C
+    m = compute_locus_matches(_profile(**{'HLA-A': ['01:01', '02:05'], 'HLA-C': ['04:01', '05:01']}), patient)
+    assert (m['hla_match_a_high'], m['hla_match_c_high'], m['hla_high_res_10']) == (1, 0, 7)
