@@ -73,7 +73,12 @@ supabase_headers = {
 # Normalize them here so the model sees values it actually knows.
 # ============================================================
 
-# Frontend disease type -> CIBMTR prim_disease_hct
+# CIBMTR prim_disease_hct codes; the frontend dropdown sends these directly
+PRIM_DISEASES = ["ALL", "AML", "MDS", "MPN", "CML", "Other acute leukemia",
+                 "Other leukemia", "NHL", "HD", "PCD", "Solid tumor", "SAA",
+                 "IPA", "IEA", "IIS", "IMD", "HIS", "AI"]
+
+# Older frontend disease types -> CIBMTR prim_disease_hct
 DISEASE_TYPE_MAP = {
     "leukemia":     "AML",
     "aml":          "AML",
@@ -91,6 +96,9 @@ def _key(value):
     return str(value).strip().lower().replace("-", "").replace(" ", "")
 
 def normalize_disease_type(value):
+    for code in PRIM_DISEASES:
+        if _key(value) == _key(code):
+            return code
     return DISEASE_TYPE_MAP.get(_key(value))
 
 def normalize_disease_group(value):
