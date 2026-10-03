@@ -30,7 +30,7 @@ def score_donor_against_patient(donor_row: dict, patient_row: dict):
 
     compat, derived, event_prob = build_and_predict(donor, patient_row, hla_matches)
 
-    return {
+    result = {
         'donor_id':            int(donor_row['donor_id']),
         'donor_age':           donor['donor_age'],
         'donor_ABO':           donor['donor_ABO'],
@@ -45,6 +45,20 @@ def score_donor_against_patient(donor_row: dict, patient_row: dict):
         'grade':               compat['grade'],
         'event_free_survival': round((1 - event_prob) * 100, 1),
     }
+    result['ranking_score'] = ranking_score(result)
+    return result
+
+
+
+
+
+# Ranking blends the rule-based compatibility score (0-100) with the
+# model's event-free survival (0-100%)
+COMPAT_WEIGHT, SURVIVAL_WEIGHT = 0.7, 0.3
+
+def ranking_score(result):
+    return round(COMPAT_WEIGHT * result['compatibility_score']
+                 + SURVIVAL_WEIGHT * result['event_free_survival'], 1)
 
 
 
@@ -64,10 +78,7 @@ def find_top5_donors(patient: dict, donor_db: pd.DataFrame):
         except Exception:
             continue
 
-    results.sort(
-        key=lambda x: (x['compatibility_score'], x['event_free_survival']),
-        reverse=True
-    )
+    results.sort(key=lambda x: x['ranking_score'], reverse=True)
 
     top5 = results[:5]
 
